@@ -47,34 +47,39 @@ We build and iterate locally (desktop browser, no AR), then deploy to AWS for re
 
 ---
 
-### Step 2: Test 3D Generation Quality (30 min, free or ~$2)
+### Step 2: Test 3D Generation Quality on SageMaker (~$2-5)
 
 **Goal:** Verify that TripoSR/InstantMesh produces acceptable 3D door meshes from a single photo.
 
 **What to do:**
-1. Open Google Colab (free GPU) or a SageMaker Notebook (ml.g5.xlarge, ~$1.41/hr)
+1. Open a SageMaker Notebook instance (ml.g5.xlarge, ~$1.41/hr)
 2. Run TripoSR with a door photo as input
 3. Download the output mesh, open in a 3D viewer (e.g., https://gltf-viewer.donmccurdy.com/)
 4. Evaluate: Is the geometry clean? Is the texture recognizable? Are panels/glass visible?
+5. **Stop the notebook when done** to avoid ongoing charges
 
-**What this proves:** The ML model can produce usable door meshes. If quality is bad, we need a different model or multi-view approach.
+**What this proves:** The ML model can produce usable door meshes on SageMaker infrastructure. If quality is bad, we try a different model.
 
-**TripoSR Colab quick test:**
+**SageMaker Notebook test:**
 ```python
-# In Google Colab with T4 GPU
+# In a SageMaker Notebook (ml.g5.xlarge kernel)
 !pip install torch torchvision torchaudio
 !git clone https://github.com/VAST-AI-Research/TripoSR.git
 %cd TripoSR
 !pip install -r requirements.txt
 
-# Run inference
+# Run inference on your door photo
 !python run.py your_door_photo.png --output-dir output/ --model-save-format glb
+
+# Download output/0/mesh.glb and inspect in 3D viewer
 ```
 
-**Alternative models to try if TripoSR quality is insufficient:**
-- InstantMesh (better geometry, slower)
-- Wonder3D (better textures)
-- Meshy API (3rd party, high quality, costs $0.10-0.50/generation)
+**If TripoSR quality is insufficient, try (in order):**
+1. InstantMesh (better geometry, slower) — also deployable on SageMaker
+2. Wonder3D (better textures)
+3. Meshy API (3rd party, high quality, $0.10-0.50/generation — fallback only)
+
+**Cost:** ~$2-5 total (1-3 hours of notebook time, stop when done)
 
 ---
 
