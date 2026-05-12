@@ -1,45 +1,51 @@
 "use client";
 
 import { useState } from "react";
-import UploadForm from "@/components/UploadForm";
-import StatusTracker from "@/components/StatusTracker";
+import BrowseTab from "@/components/BrowseTab";
+import GenerateTab from "@/components/GenerateTab";
+import GeneratedTab from "@/components/GeneratedTab";
+
+const TABS = ["Browse Doors", "My Doors", "Upload New"] as const;
+type Tab = (typeof TABS)[number];
 
 export default function Home() {
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [modelUrl, setModelUrl] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<Tab>("Browse Doors");
 
   return (
-    <main style={{ maxWidth: 600, margin: "0 auto", padding: "2rem" }}>
-      <h1 style={{ fontSize: "1.8rem", marginBottom: "0.5rem" }}>🚪 AR Door Visualizer</h1>
-      <p style={{ color: "#888", marginBottom: "2rem" }}>
-        Upload photos of your door, then view it in AR on any door frame.
-      </p>
+    <>
+      <header className="header">
+        <div className="header-logo">🚪 AR Door Visualizer</div>
+      </header>
 
-      {!jobId && <UploadForm onJobCreated={setJobId} />}
-
-      {jobId && !modelUrl && (
-        <StatusTracker jobId={jobId} onComplete={setModelUrl} />
-      )}
-
-      {modelUrl && (
-        <div>
-          <h2 style={{ marginBottom: "1rem" }}>✅ Your door is ready!</h2>
-          <a
-            href={`/ar?model=${encodeURIComponent(modelUrl)}`}
-            style={{
-              display: "inline-block",
-              padding: "1rem 2rem",
-              background: "#ff9900",
-              color: "#000",
-              borderRadius: 8,
-              textDecoration: "none",
-              fontWeight: "bold",
-            }}
+      <div className="tabs">
+        {TABS.map((tab) => (
+          <div
+            key={tab}
+            className={`tab ${activeTab === tab ? "active" : ""}`}
+            onClick={() => setActiveTab(tab)}
           >
-            View in AR →
-          </a>
-        </div>
-      )}
-    </main>
+            {tab}
+          </div>
+        ))}
+      </div>
+
+      <div className="pipeline">
+        <span className="pipeline-step active">1. Upload Photo</span>
+        <span className="pipeline-arrow">→</span>
+        <span className="pipeline-step">2. Generate 3D Model</span>
+        <span className="pipeline-arrow">→</span>
+        <span className="pipeline-step">3. View in AR</span>
+      </div>
+
+      <main>
+        {activeTab === "Browse Doors" && <BrowseTab />}
+        {activeTab === "My Doors" && <GeneratedTab />}
+        {activeTab === "Upload New" && <GenerateTab />}
+      </main>
+
+      <footer style={{ padding: "1rem 2rem", borderTop: "1px solid #2a2a2a", textAlign: "center", color: "#888", fontSize: "0.8rem" }}>
+        © 2026 AR Door Visualizer. Powered by AWS Bedrock + SageMaker.
+      </footer>
+    </>
   );
 }
