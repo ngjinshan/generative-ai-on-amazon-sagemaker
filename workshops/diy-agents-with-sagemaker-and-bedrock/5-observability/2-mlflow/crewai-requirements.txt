@@ -1,6 +1,0 @@
-crewai
-crewai[tools]
-boto3
-botocore
-sagemaker
-duckduckgo-search
