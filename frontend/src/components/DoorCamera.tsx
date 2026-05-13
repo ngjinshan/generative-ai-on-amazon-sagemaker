@@ -28,10 +28,12 @@ export default function DoorCamera({ onCapture }: { onCapture: (blob: Blob) => v
         'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
       )
 
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
+
       detectorRef.current = await ObjectDetector.createFromOptions(fileset, {
         baseOptions: {
           modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/int8/latest/efficientdet_lite0.tflite',
-          delegate: 'GPU',
+          delegate: isIOS ? 'CPU' : 'GPU',
         },
         runningMode: 'VIDEO',
         maxResults: 5,
