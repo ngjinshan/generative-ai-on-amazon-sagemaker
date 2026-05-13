@@ -1,4 +1,5 @@
 import { useRef, useState, useEffect, useCallback } from 'react'
+import * as ort from 'onnxruntime-web'
 
 interface DetectedDoor {
   x: number
@@ -12,37 +13,25 @@ export default function DoorCamera({ onCapture }: { onCapture: (blob: Blob) => v
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const overlayRef = useRef<HTMLCanvasElement>(null)
-  const detectorRef = useRef<any>(null)
+  const sessionRef = useRef<ort.InferenceSession | null>(null)
   const animFrameRef = useRef<number>(0)
   const [streaming, setStreaming] = useState(false)
   const [modelLoaded, setModelLoaded] = useState(false)
   const [detected, setDetected] = useState<DetectedDoor | null>(null)
   const [capturing, setCapturing] = useState(false)
 
-  // Load MediaPipe via npm package
+  // Load ONNX model
   useEffect(() => {
     async function loadModel() {
-      const { ObjectDetector, FilesetResolver } = await import('@mediapipe/tasks-vision')
-
-      const fileset = await FilesetResolver.forVisionTasks(
-        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
-      )
-
-      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
-
-      detectorRef.current = await ObjectDetector.createFromOptions(fileset, {
-        baseOptions: {
-          modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/int8/latest/efficientdet_lite0.tflite',
-          delegate: isIOS ? 'CPU' : 'GPU',
-        },
-        runningMode: 'VIDEO',
-        maxResults: 5,
-        scoreThreshold: 0.3,
+      ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.26.0/dist/'
+      const session = await ort.InferenceSession.create('/doors.onnx', {
+        executionProviders: ['wasm'],
       })
+      sessionRef.current = session
       setModelLoaded(true)
-      console.log('MediaPipe model loaded')
+      console.log('ONNX door model loaded')
     }
-    loadModel().catch((err) => console.error('MediaPipe load failed:', err))
+    loadModel().catch((err) => console.error('Model load failed:', err))
   }, [])
 
   // Start camera
@@ -50,7 +39,7 @@ export default function DoorCamera({ onCapture }: { onCapture: (blob: Blob) => v
     async function startCamera() {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }
+          video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
         })
         if (videoRef.current) {
           videoRef.current.srcObject = stream
@@ -70,78 +59,105 @@ export default function DoorCamera({ onCapture }: { onCapture: (blob: Blob) => v
   }, [])
 
   // Detection loop
-  const detect = useCallback(() => {
+  const detect = useCallback(async () => {
     const video = videoRef.current
+    const canvas = canvasRef.current
     const overlay = overlayRef.current
-    const detector = detectorRef.current
+    const session = sessionRef.current
 
-    if (!video || !overlay || !detector || video.readyState < 2) {
+    if (!video || !canvas || !overlay || !session || video.readyState < 2) {
       animFrameRef.current = requestAnimationFrame(detect)
       return
     }
 
-    const octx = overlay.getContext('2d')!
-    overlay.width = overlay.clientWidth
-    overlay.height = overlay.clientHeight
-    octx.clearRect(0, 0, overlay.width, overlay.height)
+    // Prepare input: resize to 640x640
+    const inputSize = 640
+    canvas.width = inputSize
+    canvas.height = inputSize
+    const ctx = canvas.getContext('2d')!
+    ctx.drawImage(video, 0, 0, inputSize, inputSize)
+    const imageData = ctx.getImageData(0, 0, inputSize, inputSize)
 
-    const scaleX = overlay.width / video.videoWidth
-    const scaleY = overlay.height / video.videoHeight
+    // Convert to float32 tensor [1, 3, 640, 640] normalized to 0-1
+    const input = new Float32Array(3 * inputSize * inputSize)
+    for (let i = 0; i < inputSize * inputSize; i++) {
+      input[i] = imageData.data[i * 4] / 255.0                     // R
+      input[inputSize * inputSize + i] = imageData.data[i * 4 + 1] / 255.0  // G
+      input[2 * inputSize * inputSize + i] = imageData.data[i * 4 + 2] / 255.0  // B
+    }
 
-    // Run detection
-    const results = detector.detectForVideo(video, performance.now())
+    const tensor = new ort.Tensor('float32', input, [1, 3, inputSize, inputSize])
 
-    let bestDoor: DetectedDoor | null = null
-    let bestScore = 0
+    try {
+      const results = await session.run({ images: tensor })
+      const output = results[Object.keys(results)[0]]
+      const data = output.data as Float32Array
+      const dims = output.dims // [1, N, 6] or [1, 25200, 6]
 
-    for (const det of results.detections) {
-      const bbox = det.boundingBox
-      if (!bbox) continue
+      // Parse YOLOv5 output: each detection is [cx, cy, w, h, conf, class_conf]
+      const numDetections = dims[1]
+      const videoW = video.videoWidth
+      const videoH = video.videoHeight
+      let bestDoor: DetectedDoor | null = null
+      let bestConf = 0.4 // minimum threshold
 
-      const aspect = bbox.height / bbox.width
-      const score = det.categories[0]?.score || 0
+      for (let i = 0; i < numDetections; i++) {
+        const offset = i * dims[2]
+        const conf = data[offset + 4]
+        if (conf < bestConf) continue
 
-      // Door-like: tall rectangle, large enough
-      const isDoorShaped = aspect >= 1.5 && aspect <= 3.5
-      const isLargeEnough = bbox.height > video.videoHeight * 0.3
-      const finalScore = score * (isDoorShaped ? 2 : 0.3) * (isLargeEnough ? 1.5 : 0.5)
+        const cx = data[offset] / inputSize * videoW
+        const cy = data[offset + 1] / inputSize * videoH
+        const w = data[offset + 2] / inputSize * videoW
+        const h = data[offset + 3] / inputSize * videoH
 
-      if (finalScore > bestScore && isDoorShaped && isLargeEnough) {
-        bestScore = finalScore
-        bestDoor = {
-          x: bbox.originX,
-          y: bbox.originY,
-          width: bbox.width,
-          height: bbox.height,
-          confidence: Math.min(1, score),
+        // Door-like aspect ratio check
+        const aspect = h / w
+        if (aspect < 1.3 || aspect > 4.0) continue
+
+        if (conf > bestConf) {
+          bestConf = conf
+          bestDoor = {
+            x: cx - w / 2,
+            y: cy - h / 2,
+            width: w,
+            height: h,
+            confidence: conf,
+          }
         }
       }
-    }
 
-    // Fallback: edge detection
-    if (!bestDoor) {
-      bestDoor = detectByEdges(video, canvasRef.current!)
-    }
+      // Draw overlay
+      overlay.width = overlay.clientWidth
+      overlay.height = overlay.clientHeight
+      const octx = overlay.getContext('2d')!
+      octx.clearRect(0, 0, overlay.width, overlay.height)
 
-    if (bestDoor) {
-      setDetected(bestDoor)
-      octx.strokeStyle = '#00ff00'
-      octx.lineWidth = 3
-      octx.strokeRect(bestDoor.x * scaleX, bestDoor.y * scaleY, bestDoor.width * scaleX, bestDoor.height * scaleY)
-      const corners = [
-        [bestDoor.x, bestDoor.y],
-        [bestDoor.x + bestDoor.width, bestDoor.y],
-        [bestDoor.x + bestDoor.width, bestDoor.y + bestDoor.height],
-        [bestDoor.x, bestDoor.y + bestDoor.height],
-      ]
-      octx.fillStyle = '#00ff00'
-      corners.forEach(([cx, cy]) => {
-        octx.beginPath()
-        octx.arc(cx * scaleX, cy * scaleY, 6, 0, Math.PI * 2)
-        octx.fill()
-      })
-    } else {
-      setDetected(null)
+      if (bestDoor) {
+        setDetected(bestDoor)
+        const scaleX = overlay.width / videoW
+        const scaleY = overlay.height / videoH
+        octx.strokeStyle = '#00ff00'
+        octx.lineWidth = 3
+        octx.strokeRect(bestDoor.x * scaleX, bestDoor.y * scaleY, bestDoor.width * scaleX, bestDoor.height * scaleY)
+        // Corner dots
+        const corners = [
+          [bestDoor.x, bestDoor.y],
+          [bestDoor.x + bestDoor.width, bestDoor.y],
+          [bestDoor.x + bestDoor.width, bestDoor.y + bestDoor.height],
+          [bestDoor.x, bestDoor.y + bestDoor.height],
+        ]
+        octx.fillStyle = '#00ff00'
+        corners.forEach(([cx, cy]) => {
+          octx.beginPath()
+          octx.arc(cx * scaleX, cy * scaleY, 6, 0, Math.PI * 2)
+          octx.fill()
+        })
+      } else {
+        setDetected(null)
+      }
+    } catch (err) {
+      console.error('Inference error:', err)
     }
 
     animFrameRef.current = requestAnimationFrame(detect)
@@ -153,27 +169,28 @@ export default function DoorCamera({ onCapture }: { onCapture: (blob: Blob) => v
     }
   }, [streaming, modelLoaded, detect])
 
-  // Capture
+  // Capture: crop to detected door bbox
   const handleCapture = () => {
     if (!detected || !videoRef.current) return
     setCapturing(true)
 
     const video = videoRef.current
-    const canvas = document.createElement('canvas')
-    canvas.width = video.videoWidth
-    canvas.height = video.videoHeight
-    canvas.getContext('2d')!.drawImage(video, 0, 0)
+    const fullCanvas = document.createElement('canvas')
+    fullCanvas.width = video.videoWidth
+    fullCanvas.height = video.videoHeight
+    fullCanvas.getContext('2d')!.drawImage(video, 0, 0)
 
-    const pad = 30
-    const x = Math.max(0, detected.x - pad)
-    const y = Math.max(0, detected.y - pad)
-    const w = Math.min(canvas.width - x, detected.width + pad * 2)
-    const h = Math.min(canvas.height - y, detected.height + pad * 2)
+    // Crop to detected door with small padding
+    const pad = 15
+    const x = Math.max(0, Math.round(detected.x - pad))
+    const y = Math.max(0, Math.round(detected.y - pad))
+    const w = Math.min(fullCanvas.width - x, Math.round(detected.width + pad * 2))
+    const h = Math.min(fullCanvas.height - y, Math.round(detected.height + pad * 2))
 
     const crop = document.createElement('canvas')
     crop.width = w
     crop.height = h
-    crop.getContext('2d')!.drawImage(canvas, x, y, w, h, 0, 0, w, h)
+    crop.getContext('2d')!.drawImage(fullCanvas, x, y, w, h, 0, 0, w, h)
 
     crop.toBlob((blob) => {
       if (blob) onCapture(blob)
@@ -187,7 +204,7 @@ export default function DoorCamera({ onCapture }: { onCapture: (blob: Blob) => v
       <canvas ref={canvasRef} style={{ display: 'none' }} />
       <canvas ref={overlayRef} style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none', borderRadius: 12 }} />
       <div style={{ textAlign: 'center', marginTop: 16 }}>
-        {!modelLoaded && <p style={{ color: '#666' }}>Loading detection model...</p>}
+        {!modelLoaded && <p style={{ color: '#888' }}>Loading door detection model...</p>}
         {modelLoaded && (
           <p style={{ color: detected ? '#00cc00' : '#999', fontWeight: 600 }}>
             {detected ? `Door detected (${Math.round(detected.confidence * 100)}%)` : 'Point camera at a door...'}
@@ -196,64 +213,12 @@ export default function DoorCamera({ onCapture }: { onCapture: (blob: Blob) => v
         <button
           onClick={handleCapture}
           disabled={!detected || capturing}
-          style={{
-            padding: '14px 40px', fontSize: 16, fontWeight: 700,
-            background: detected ? '#00cc00' : '#ddd',
-            color: '#fff', border: 'none', borderRadius: 24, cursor: detected ? 'pointer' : 'default',
-          }}
+          className="btn btn-primary btn-large"
+          style={{ marginTop: 8, opacity: detected ? 1 : 0.4 }}
         >
           {capturing ? 'Capturing...' : '📸 Capture Door'}
         </button>
       </div>
     </div>
   )
-}
-
-function detectByEdges(video: HTMLVideoElement, canvas: HTMLCanvasElement): DetectedDoor | null {
-  const w = video.videoWidth
-  const h = video.videoHeight
-  canvas.width = w
-  canvas.height = h
-  const ctx = canvas.getContext('2d')!
-  ctx.drawImage(video, 0, 0, w, h)
-
-  const scale = 8
-  const sw = Math.floor(w / scale)
-  const sh = Math.floor(h / scale)
-  const small = document.createElement('canvas')
-  small.width = sw
-  small.height = sh
-  small.getContext('2d')!.drawImage(canvas, 0, 0, sw, sh)
-  const frame = small.getContext('2d')!.getImageData(0, 0, sw, sh)
-
-  const gray = new Uint8Array(sw * sh)
-  for (let i = 0; i < sw * sh; i++) {
-    const si = i * 4
-    gray[i] = (frame.data[si] * 0.299 + frame.data[si + 1] * 0.587 + frame.data[si + 2] * 0.114) | 0
-  }
-
-  const colStr = new Float32Array(sw)
-  for (let y = 1; y < sh - 1; y++) {
-    for (let x = 1; x < sw - 1; x++) {
-      const gx = Math.abs(gray[y * sw + x + 1] - gray[y * sw + x - 1])
-      if (gx > 20) colStr[x]++
-    }
-  }
-
-  const minW = sw * 0.15, maxW = sw * 0.65
-  let best = 0, bx = 0, bw = 0
-  for (let l = 0; l < sw * 0.7; l++) {
-    if (colStr[l] < sh * 0.25) continue
-    for (let r = l + minW; r < Math.min(l + maxW, sw); r++) {
-      if (colStr[r] < sh * 0.25) continue
-      const s = colStr[l] + colStr[r]
-      if (s > best) { best = s; bx = l; bw = r - l }
-    }
-  }
-
-  if (best === 0) return null
-  const aspect = (sh * 0.8) / bw
-  if (aspect < 1.5 || aspect > 3.5) return null
-
-  return { x: bx * scale, y: h * 0.05, width: bw * scale, height: h * 0.85, confidence: Math.min(1, best / (sh * 2)) }
 }
