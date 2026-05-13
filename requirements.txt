@@ -1,0 +1,4 @@
+trimesh[easy]
+Pillow
+rembg[cpu]
+numpy

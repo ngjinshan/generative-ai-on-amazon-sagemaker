@@ -37,3 +37,4 @@ cdk.context.json
 # Misc
 *.log
 node_modules/
+frontend/certificates/
