@@ -1,8 +1,4 @@
-"use client";
-
 import { useState, useRef } from "react";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "/api";
 
 export default function GenerateTab() {
   const [file, setFile] = useState<File | null>(null);
@@ -20,44 +16,12 @@ export default function GenerateTab() {
 
   async function handleGenerate() {
     if (!file) return;
-    setStatus("uploading");
-
-    try {
-      // 1. Get presigned URL
-      const res = await fetch(`${API_URL}/upload`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fileNames: [file.name], fileTypes: [file.type] }),
-      });
-      const { jobId, uploadUrls } = await res.json();
-
-      // 2. Upload to S3 (or mock)
-      if (uploadUrls[0] !== "/mock-upload") {
-        await fetch(uploadUrls[0], { method: "PUT", body: file, headers: { "Content-Type": file.type } });
-      }
-
-      // 3. Trigger generation
-      setStatus("processing");
-      await fetch(`${API_URL}/generate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jobId }),
-      });
-
-      // 4. Poll status
-      const poll = setInterval(async () => {
-        const statusRes = await fetch(`${API_URL}/status/${jobId}`);
-        const data = await statusRes.json();
-        if (data.status === "COMPLETE") {
-          clearInterval(poll);
-          setModelUrl(data.modelUrl);
-          setStatus("complete");
-        }
-      }, 2000);
-    } catch {
-      setStatus("idle");
-      alert("Generation failed. Please try again.");
-    }
+    setStatus("processing");
+    // TODO: wire up to real API
+    setTimeout(() => {
+      setModelUrl("/sample-door.glb");
+      setStatus("complete");
+    }, 3000);
   }
 
   return (
