@@ -19,15 +19,13 @@ export default function DoorCamera({ onCapture }: { onCapture: (blob: Blob) => v
   const [detected, setDetected] = useState<DetectedDoor | null>(null)
   const [capturing, setCapturing] = useState(false)
 
-  // Load MediaPipe
+  // Load MediaPipe via npm package
   useEffect(() => {
     async function loadModel() {
-      // @ts-ignore
-      const vision = await Function('return import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest")')()
-      const { ObjectDetector, FilesetResolver } = vision
+      const { ObjectDetector, FilesetResolver } = await import('@mediapipe/tasks-vision')
 
       const fileset = await FilesetResolver.forVisionTasks(
-        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
+        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
       )
 
       detectorRef.current = await ObjectDetector.createFromOptions(fileset, {
@@ -40,8 +38,9 @@ export default function DoorCamera({ onCapture }: { onCapture: (blob: Blob) => v
         scoreThreshold: 0.3,
       })
       setModelLoaded(true)
+      console.log('MediaPipe model loaded')
     }
-    loadModel().catch(console.error)
+    loadModel().catch((err) => console.error('MediaPipe load failed:', err))
   }, [])
 
   // Start camera
