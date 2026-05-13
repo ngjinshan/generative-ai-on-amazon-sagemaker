@@ -30,16 +30,8 @@ export default function DoorCamera({ onCapture }: { onCapture: (blob: Blob) => v
   // Load MediaPipe Object Detection
   useEffect(() => {
     async function loadModel() {
-      // Load MediaPipe vision WASM
-      const script = document.createElement('script');
-      script.src = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_bundle.mjs';
-      script.type = 'module';
-
-      // Use dynamic import for MediaPipe
-      const vision = await import(
-        /* webpackIgnore: true */
-        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest'
-      );
+      // @ts-ignore - dynamic CDN import
+      const vision = await Function('return import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest")')();
 
       const { ObjectDetector, FilesetResolver } = vision;
 
